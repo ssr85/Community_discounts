@@ -1,192 +1,227 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
-import CsvUploader from '@/components/CsvUploader';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  PieChart, Pie, Cell 
+} from 'recharts';
 
-type Analytics = {
-  totalSpend: number;
-  byPlatform: Record<string, number>;
-  topMerchants: { name: string; amount: number }[];
-  memberCount: number;
-};
-
-type Community = { id: string; name: string };
-
-const COLORS = ['#16a34a', '#2563eb', '#d97706', '#dc2626', '#7c3aed'];
-
-export default function DashboardPage() {
-  const [community, setCommunity] = useState<Community | null>(null);
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+export default function Dashboard() {
+  const [deals, setDeals] = useState<any[]>([]);
+  const [stats, setStats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showUpload, setShowUpload] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [genMessage, setGenMessage] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const supabase = createClient();
 
-  useEffect(() => { loadData(); }, []);
+  const fetchData = async () => {
+    setLoading(true);
+    
+    // Fetch Deals
+    const { data: dealsData } = await supabase
+      .from('group_deals')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    // Fetch Aggregated Stats for Charts
+    const { data: spendData } = await supabase
+      .from('spending_records')
+      .select('merchant_name, amount, category');
 
-  async function loadData() {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const { data } = await supabase
-      .from('community_members')
-      .select('communities(id, name)')
-      .eq('user_id', user.id)
-      .limit(1)
-      .single();
-
-    if (!data?.communities) { setLoading(false); return; }
-    const c = data.communities as unknown as Community;
-    setCommunity(c);
-
-    const res = await fetch(`/api/analytics/community?community_id=${c.id}`);
-    if (res.ok) setAnalytics(await res.json());
-    setLoading(false);
-  }
-
-  async function generateDeals() {
-    if (!community) return;
-    setGenerating(true);
-    setGenMessage('');
-    const res = await fetch('/api/agent/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ community_id: community.id }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setGenMessage(`✓ ${data.inserted} deal opportunities generated! Check the Deals tab.`);
-    } else {
-      setGenMessage(`Error: ${data.error}`);
+    if (dealsData) setDeals(dealsData);
+    
+    if (spendData) {
+      // Aggregate for charts
+      const merchantAgg = spendData.reduce((acc: any, curr: any) => {
+        const existing = acc.find((a: any) => a.name === curr.merchant_name);
+        if (existing) {
+          existing.value += Number(curr.amount);
+        } else {
+          acc.push({ name: curr.merchant_name, value: Number(curr.amount) });
+        }
+        return acc;
+      }, []);
+      
+      setStats(merchantAgg.sort((a: any, b: any) => b.value - a.value).slice(0, 5));
     }
-    setGenerating(false);
-  }
 
-  if (loading) return <div className="text-gray-400 text-sm">Loading...</div>;
+    setLoading(false);
+  };
 
-  if (!community) {
-    return (
-      <div className="text-center py-16">
-        <div className="text-4xl mb-4">🏘️</div>
-        <h2 className="text-xl font-semibold text-gray-700 mb-2">No community yet</h2>
-        <p className="text-gray-500 text-sm mb-4">Join or create a community to see your spending dashboard.</p>
-        <a href="/community" className="inline-block bg-green-600 text-white rounded-lg px-5 py-2.5 text-sm font-medium hover:bg-green-700">
-          Set up community
-        </a>
-      </div>
-    );
-  }
+  useEffect(() => {
+    fetchData();
+  }, []);
 
-  const platformData = analytics
-    ? Object.entries(analytics.byPlatform).map(([name, value]) => ({ name, value }))
-    : [];
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    try {
+      const res = await fetch('/api/agent/analyze', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        await fetchData();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const COLORS = ['#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      {/* Header with Stats Summary */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{community.name}</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Last 30 days</p>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
+            Community Dashboard
+          </h1>
+          <p className="text-slate-500 text-sm">Real-time spending insights and AI-negotiated deals.</p>
         </div>
-        <div className="flex gap-3">
-          <button
-            onClick={() => setShowUpload(v => !v)}
-            className="border border-gray-300 rounded-lg px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-          >
-            {showUpload ? 'Hide Upload' : '+ Upload CSV'}
-          </button>
-          <button
-            onClick={generateDeals}
-            disabled={generating || !analytics?.totalSpend}
-            className="bg-green-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
-          >
-            {generating ? 'Analyzing...' : '✨ Generate AI Deals'}
-          </button>
-        </div>
-      </div>
-
-      {genMessage && (
-        <div className={`text-sm rounded-lg p-3 ${genMessage.startsWith('✓') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
-          {genMessage}
-        </div>
-      )}
-
-      {showUpload && (
-        <div className="bg-white rounded-2xl border border-gray-200 p-6">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Upload Spending Data</h2>
-          <CsvUploader
-            communityId={community.id}
-            onSuccess={(count) => { setShowUpload(false); loadData(); alert(`${count} records uploaded!`); }}
-          />
-        </div>
-      )}
-
-      {/* Summary Cards */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white rounded-2xl border border-gray-200 p-5">
-          <div className="text-xs text-gray-500 mb-1">Community Spend</div>
-          <div className="text-2xl font-bold text-gray-900">
-            ₹{analytics ? (analytics.totalSpend / 1000).toFixed(1) : '0'}k
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl border border-gray-200 p-5">
-          <div className="text-xs text-gray-500 mb-1">Members</div>
-          <div className="text-2xl font-bold text-gray-900">{analytics?.memberCount ?? 0}</div>
-        </div>
-        <div className="bg-white rounded-2xl border border-gray-200 p-5">
-          <div className="text-xs text-gray-500 mb-1">Avg per Member</div>
-          <div className="text-2xl font-bold text-gray-900">
-            ₹{analytics && analytics.memberCount
-              ? Math.round(analytics.totalSpend / analytics.memberCount).toLocaleString()
-              : '0'}
-          </div>
-        </div>
-      </div>
-
-      {analytics && analytics.totalSpend > 0 ? (
-        <div className="grid grid-cols-2 gap-6">
-          {/* Spend by Platform */}
-          {platformData.length > 0 && (
-            <div className="bg-white rounded-2xl border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-4">Spend by Platform</h2>
-              <ResponsiveContainer width="100%" height={200}>
-                <PieChart>
-                  <Pie data={platformData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name }) => name}>
-                    {platformData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip formatter={(v) => `₹${Number(v).toFixed(0)}`} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
+        
+        <button
+          onClick={handleAnalyze}
+          disabled={analyzing}
+          className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl font-bold transition-all shadow-sm ${
+            analyzing 
+              ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+              : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 shadow-indigo-200'
+          }`}
+        >
+          {analyzing ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              AI Analyzing...
+            </>
+          ) : (
+            <>
+              <span className="text-lg">✨</span>
+              Generate New Deals
+            </>
           )}
+        </button>
+      </div>
 
-          {/* Top Merchants */}
-          {analytics.topMerchants.length > 0 && (
-            <div className="bg-white rounded-2xl border border-gray-200 p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-4">Top Merchants</h2>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={analytics.topMerchants.slice(0, 6)} layout="vertical">
-                  <XAxis type="number" tickFormatter={v => `₹${(v/1000).toFixed(0)}k`} tick={{ fontSize: 10 }} />
-                  <YAxis dataKey="name" type="category" width={90} tick={{ fontSize: 10 }} />
-                  <Tooltip formatter={(v) => `₹${Number(v).toFixed(0)}`} />
-                  <Bar dataKey="amount" fill="#16a34a" radius={[0, 4, 4, 0]} />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        {/* Left Column: Deals Feed */}
+        <div className="lg:col-span-2 space-y-6">
+          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+            Recommended Group Deals
+            <span className="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] uppercase tracking-widest rounded-full">AI Powered</span>
+          </h2>
+
+          {loading ? (
+            <div className="space-y-4">
+              {[1, 2, 3].map(i => <div key={i} className="h-32 bg-slate-50 animate-pulse rounded-3xl border border-slate-100" />)}
+            </div>
+          ) : deals.length === 0 ? (
+            <div className="text-center py-16 bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+              <p className="text-slate-400 text-sm italic">No deals generated yet. Click "Generate New Deals" to trigger the analyzer.</p>
+            </div>
+          ) : (
+            deals.map((deal) => (
+              <div 
+                key={deal.id}
+                className="group bg-white border border-slate-200 p-6 rounded-[2rem] hover:shadow-2xl hover:shadow-indigo-500/10 hover:border-indigo-200 transition-all duration-300"
+              >
+                <div className="flex items-start gap-5">
+                  <div className="w-14 h-14 rounded-2xl bg-slate-900 flex items-center justify-center text-white text-2xl font-black">
+                    {deal.merchant_name[0]}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex justify-between items-start mb-1">
+                      <h3 className="text-xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors uppercase italic tracking-tighter">
+                        {deal.title}
+                      </h3>
+                      <div className="bg-emerald-100 text-emerald-700 text-[10px] font-black px-2 py-1 rounded-md uppercase tracking-wider">
+                        {deal.discount_pct}% OFF
+                      </div>
+                    </div>
+                    <p className="text-slate-500 text-sm leading-relaxed mb-4">
+                       {deal.description}
+                    </p>
+                    
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-50">
+                       <div className="flex items-center gap-8">
+                         <div>
+                            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Threshold</p>
+                            <p className="font-mono text-sm font-bold text-slate-700">{deal.min_orders} Households</p>
+                         </div>
+                         <div>
+                            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Current</p>
+                            <p className="font-mono text-sm font-bold text-indigo-600 italic">Pre-Active</p>
+                         </div>
+                       </div>
+                       <button className="px-6 py-2 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-indigo-600 transition-colors shadow-lg shadow-slate-200">
+                         Commit Intent
+                       </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Right Column: Spending Stats */}
+        <div className="space-y-8">
+          <div className="bg-white border border-slate-200 p-6 rounded-[2rem] shadow-sm">
+            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6">Spend Concentration</h3>
+            
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={stats} layout="vertical">
+                  <XAxis type="number" hide />
+                  <YAxis 
+                    dataKey="name" 
+                    type="category" 
+                    stroke="#94a3b8" 
+                    fontSize={10} 
+                    width={80}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <Tooltip 
+                    cursor={{fill: '#f8fafc'}} 
+                    contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
+                  />
+                  <Bar dataKey="value" fill="#6366f1" radius={[0, 8, 8, 0]} barSize={16} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-          )}
+            
+            <div className="mt-8 space-y-3">
+               {stats.slice(0, 3).map((s, i) => (
+                 <div key={s.name} className="flex items-center justify-between text-xs">
+                   <span className="text-slate-500 font-bold flex items-center gap-2">
+                     <span className="w-2 h-2 rounded-full" style={{backgroundColor: COLORS[i]}} />
+                     {s.name}
+                   </span>
+                   <span className="font-mono font-black text-slate-900 uppercase">₹{Math.round(s.value).toLocaleString()}</span>
+                 </div>
+               ))}
+            </div>
+          </div>
+
+          <div className="bg-indigo-600 p-8 rounded-[2rem] text-white shadow-xl shadow-indigo-200 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform duration-700">
+               <svg className="w-24 h-24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" /></svg>
+            </div>
+            <h3 className="text-xl font-black italic mb-2 tracking-tighter uppercase">Viral Savings</h3>
+            <p className="text-indigo-100 text-sm mb-6 leading-snug">
+              Every neighbor you invite increases the collective power. You're currently <span className="font-bold text-white">4 invites away</span> from boosting all rewards by 5%.
+            </p>
+            <button className="w-full py-3 bg-white text-indigo-600 font-black rounded-2xl text-sm transition-transform hover:-translate-y-1 active:scale-95">
+              Invite to Society
+            </button>
+          </div>
         </div>
-      ) : (
-        <div className="bg-white rounded-2xl border border-gray-200 p-10 text-center">
-          <div className="text-3xl mb-3">📊</div>
-          <p className="text-gray-600 text-sm mb-4">No spending data yet. Upload a CSV to see your community insights.</p>
-          <button onClick={() => setShowUpload(true)} className="text-green-600 text-sm font-medium hover:underline">
-            Upload now →
-          </button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

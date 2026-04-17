@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS public.users (
   full_name     TEXT,
   avatar_url    TEXT,
   pincode       TEXT,
+  role          TEXT NOT NULL DEFAULT 'member',
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -92,14 +93,18 @@ CREATE TABLE IF NOT EXISTS public.ai_insights (
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-  INSERT INTO public.users (id, email, full_name, avatar_url)
+  INSERT INTO public.users (id, email, full_name, avatar_url, role)
   VALUES (
     NEW.id,
     NEW.email,
     NEW.raw_user_meta_data->>'full_name',
-    NEW.raw_user_meta_data->>'avatar_url'
+    NEW.raw_user_meta_data->>'avatar_url',
+    COALESCE(NEW.raw_user_meta_data->>'role', 'member')
   )
-  ON CONFLICT (id) DO NOTHING;
+  ON CONFLICT (id) DO UPDATE SET
+    full_name = EXCLUDED.full_name,
+    avatar_url = EXCLUDED.avatar_url,
+    role = COALESCE(EXCLUDED.role, public.users.role);
   RETURN NEW;
 END;
 $$;
@@ -154,42 +159,63 @@ CREATE TRIGGER on_booking_change
 -- ── Row Level Security ─────────────────────────────────────────────────────────
 
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view and update own profile" ON public.users;
 CREATE POLICY "Users can view and update own profile"
-  ON public.users FOR ALL USING (auth.uid() = id);
+  ON public.users FOR ALL USING (auth.uid() = id OR (SELECT role FROM public.users WHERE id = auth.uid()) = 'super_admin');
 
 ALTER TABLE public.communities ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Members can view their communities" ON public.communities;
 CREATE POLICY "Members can view their communities"
   ON public.communities FOR SELECT
-  USING (id IN (SELECT community_id FROM public.community_members WHERE user_id = auth.uid()));
+  USING (
+    id IN (SELECT community_id FROM public.community_members WHERE user_id = auth.uid())
+    OR (SELECT role FROM public.users WHERE id = auth.uid()) = 'super_admin'
+  );
+DROP POLICY IF EXISTS "Authenticated users can create communities" ON public.communities;
 CREATE POLICY "Authenticated users can create communities"
   ON public.communities FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Admins can update their community" ON public.communities;
 CREATE POLICY "Admins can update their community"
   ON public.communities FOR UPDATE USING (admin_id = auth.uid());
 
 ALTER TABLE public.community_members ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Members can view their memberships" ON public.community_members;
 CREATE POLICY "Members can view their memberships"
   ON public.community_members FOR SELECT USING (user_id = auth.uid());
+DROP POLICY IF EXISTS "Users can join communities" ON public.community_members;
 CREATE POLICY "Users can join communities"
   ON public.community_members FOR INSERT WITH CHECK (user_id = auth.uid());
 
 ALTER TABLE public.spending_records ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users see own spending records" ON public.spending_records;
 CREATE POLICY "Users see own spending records"
-  ON public.spending_records FOR ALL USING (user_id = auth.uid());
+  ON public.spending_records FOR ALL USING (
+    user_id = auth.uid()
+    OR (SELECT role FROM public.users WHERE id = auth.uid()) = 'super_admin'
+  );
 
 ALTER TABLE public.group_deals ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Members see community deals" ON public.group_deals;
 CREATE POLICY "Members see community deals"
   ON public.group_deals FOR SELECT
-  USING (community_id IN (SELECT community_id FROM public.community_members WHERE user_id = auth.uid()));
+  USING (
+    community_id IN (SELECT community_id FROM public.community_members WHERE user_id = auth.uid())
+    OR (SELECT role FROM public.users WHERE id = auth.uid()) = 'super_admin'
+  );
+DROP POLICY IF EXISTS "Authenticated users can insert deals" ON public.group_deals;
 CREATE POLICY "Authenticated users can insert deals"
   ON public.group_deals FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
 
 ALTER TABLE public.deal_bookings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users manage own bookings" ON public.deal_bookings;
 CREATE POLICY "Users manage own bookings"
   ON public.deal_bookings FOR ALL USING (user_id = auth.uid());
 
 ALTER TABLE public.ai_insights ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Members see community insights" ON public.ai_insights;
 CREATE POLICY "Members see community insights"
   ON public.ai_insights FOR SELECT
   USING (community_id IN (SELECT community_id FROM public.community_members WHERE user_id = auth.uid()));
+DROP POLICY IF EXISTS "Service role can insert insights" ON public.ai_insights;
 CREATE POLICY "Service role can insert insights"
   ON public.ai_insights FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);

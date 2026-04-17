@@ -22,9 +22,36 @@ export default function DealsPage() {
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState<string | null>(null);
 
-  useEffect(() => { loadDeals(); }, []);
+  useEffect(() => { loadInitialData(); }, []);
 
-  async function loadDeals() {
+  useEffect(() => {
+    if (!communityId) return;
+
+    const supabase = createClient();
+    // Unique channel for this community to avoid collisions
+    const channel = supabase.channel(`community-deals-${communityId}`)
+      .on(
+        'postgres_changes',
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'group_deals', 
+          filter: `community_id=eq.${communityId}` 
+        },
+        (payload) => {
+          setDeals(prev => prev.map(d => 
+            d.id === (payload.new as Deal).id ? { ...d, ...(payload.new as Deal) } : d
+          ));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [communityId]);
+
+  async function loadInitialData() {
     const supabase = createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -47,15 +74,6 @@ export default function DealsPage() {
     const joinedIds = new Set(bookings?.map(b => b.deal_id) ?? []);
     setDeals((dealsData ?? []).map(d => ({ ...d, hasJoined: joinedIds.has(d.id) })));
     setLoading(false);
-
-    // Real-time updates
-    supabase.channel('deals').on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'group_deals', filter: `community_id=eq.${membership.community_id}` },
-      (payload) => {
-        setDeals(prev => prev.map(d => d.id === (payload.new as Deal).id ? { ...d, ...(payload.new as Deal) } : d));
-      }
-    ).subscribe();
   }
 
   async function joinDeal(dealId: string) {

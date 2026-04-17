@@ -1,10 +1,12 @@
-import { openai } from '../../src/lib/openai';
+import { HfInference } from '@huggingface/inference';
 import { supabaseAdmin } from '../../src/lib/supabase-admin';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const hf = new HfInference(process.env.HF_TOKEN);
+
 export async function generateDeals(communityId: string) {
-  console.log(`🤖 Starting deal generation for community: ${communityId}`);
+  console.log(`🤖 Starting deal generation for community: ${communityId} using HuggingFace (Qwen 2.5)`);
 
   // 1. Fetch spending records for the community
   const { data: records, error } = await supabaseAdmin
@@ -33,7 +35,6 @@ export async function generateDeals(communityId: string) {
   }, {});
 
   // 3. Prepare the Prompt from SKILL.md
-  // Using a relative path that works from the src/app/api/... runtime context
   const skillPath = path.join(process.cwd(), 'skills', 'deal-orchestrator', 'SKILL.md');
   const skillMd = fs.readFileSync(skillPath, 'utf8');
   
@@ -42,22 +43,32 @@ Current Community Spending Data (Aggregated):
 ${JSON.stringify(stats, null, 2)}
 
 Please analyze this data and provide 3-5 group deal recommendations as per the instructions in the skill definition.
-Respond with a JSON object containing a "deals" key.
+Your response MUST be a JSON object with a single "deals" key containing the array of deal objects.
+Do not include any other text in your response, only the JSON.
   `;
 
-  // 4. Invoke OpenAI (GPT-4o)
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o',
+  // 4. Invoke HuggingFace (Qwen 2.5-7B-Instruct)
+  const response = await hf.chatCompletion({
+    model: "Qwen/Qwen2.5-7B-Instruct",
     messages: [
       { role: 'system', content: skillMd },
       { role: 'user', content: userContent }
     ],
-    response_format: { type: 'json_object' }
+    max_tokens: 2048,
+    temperature: 0.1, // Low temperature for consistent JSON
   });
 
   const rawJson = response.choices[0].message.content || '{"deals": []}';
-  const result = JSON.parse(rawJson);
   
-  console.log(`✅ AI generated ${result.deals?.length || 0} deals.`);
-  return result.deals || [];
+  // Clean potential markdown code blocks from response
+  const cleanedJson = rawJson.replace(/```json|```/g, '').trim();
+  
+  try {
+    const result = JSON.parse(cleanedJson);
+    console.log(`✅ HuggingFace generated ${result.deals?.length || 0} deals.`);
+    return result.deals || [];
+  } catch (parseError) {
+    console.error('Failed to parse AI response as JSON:', cleanedJson);
+    throw new Error('AI response was not valid JSON');
+  }
 }
