@@ -33,6 +33,7 @@ export default function AdminDashboard() {
         { data: deals },
         { data: spend }
       ] = await Promise.all([
+        supabase.auth.getUser(),
         supabase.from('communities').select('*'),
         supabase.from('users').select('id'),
         supabase.from('group_deals').select('*'),

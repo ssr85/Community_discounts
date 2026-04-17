@@ -12,10 +12,40 @@ export default function Dashboard() {
   const [stats, setStats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d');
+  const [userSpend, setUserSpend] = useState<number>(0);
+  const [communityBadge, setCommunityBadge] = useState<{members: number; savings: number}>({members: 0, savings: 0});
   const supabase = createClient();
+  const [user, setUser] = useState<any>(null);
 
   const fetchData = async () => {
     setLoading(true);
+    
+    // Get current user
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    setUser(currentUser);
+    
+    // Calculate date filter
+    let fromDate = new Date();
+    if (timeRange === '7d') fromDate.setDate(fromDate.getDate() - 7);
+    else if (timeRange === '30d') fromDate.setDate(fromDate.getDate() - 30);
+    else if (timeRange === '90d') fromDate.setDate(fromDate.getDate() - 90);
+    else fromDate = new Date('2000-01-01');
+    const dateStr = fromDate.toISOString().split('T')[0];
+    
+    // Get user's community membership
+    let communityId: string | null = null;
+    if (currentUser) {
+      const { data: membership } = await supabase
+        .from('community_members')
+        .select('community_id, communities(name)')
+        .eq('user_id', currentUser.id)
+        .limit(1)
+        .single();
+      if (membership?.community_id) {
+        communityId = membership.community_id;
+      }
+    }
     
     // Fetch Deals
     const { data: dealsData } = await supabase
@@ -23,15 +53,24 @@ export default function Dashboard() {
       .select('*')
       .order('created_at', { ascending: false });
     
-    // Fetch Aggregated Stats for Charts
+    // Fetch user's spend for selected period
+    const { data: userSpendData } = await supabase
+      .from('spending_records')
+      .select('amount, date')
+      .eq('user_id', currentUser?.id)
+      .gte('date', dateStr);
+    
+    const totalUserSpend = userSpendData?.reduce((sum, r) => sum + Number(r.amount), 0) || 0;
+    setUserSpend(totalUserSpend);
+    
+    // Fetch Aggregated Stats for Charts (user's data only)
     const { data: spendData } = await supabase
       .from('spending_records')
-      .select('merchant_name, amount, category');
+      .select('merchant_name, amount, category, date')
+      .eq('user_id', currentUser?.id)
+      .gte('date', dateStr);
 
-    if (dealsData) setDeals(dealsData);
-    
     if (spendData) {
-      // Aggregate for charts
       const merchantAgg = spendData.reduce((acc: any, curr: any) => {
         const existing = acc.find((a: any) => a.name === curr.merchant_name);
         if (existing) {
@@ -41,8 +80,27 @@ export default function Dashboard() {
         }
         return acc;
       }, []);
-      
       setStats(merchantAgg.sort((a: any, b: any) => b.value - a.value).slice(0, 5));
+    }
+
+    if (dealsData) setDeals(dealsData);
+    
+    // Get community badge data (member count and savings)
+    if (communityId) {
+      const [{ data: members }, { data: activeDeals }] = await Promise.all([
+        supabase.from('community_members').select('user_id').eq('community_id', communityId),
+        supabase.from('group_deals').select('discount_pct, current_orders, min_orders').eq('community_id', communityId).eq('status', 'active'),
+      ]);
+      
+      const potentialSavings = activeDeals?.reduce((sum, d) => {
+        const avgOrder = 500;
+        return sum + (d.current_orders * d.discount_pct * avgOrder / 100);
+      }, 0) || 0;
+      
+      setCommunityBadge({
+        members: members?.length || 0,
+        savings: potentialSavings,
+      });
     }
 
     setLoading(false);
@@ -50,7 +108,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [timeRange]);
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
@@ -104,6 +162,50 @@ export default function Dashboard() {
             </>
           )}
         </button>
+      </div>
+
+      {/* Timeline Selector */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mr-2">Your Spend:</span>
+        {(['7d', '30d', '90d', 'all'] as const).map(range => (
+          <button
+            key={range}
+            onClick={() => setTimeRange(range)}
+            className={`px-3 py-1.5 text-xs font-bold rounded-full transition-all ${
+              timeRange === range 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+            }`}
+          >
+            {range === '7d' ? '7 Days' : range === '30d' ? '30 Days' : range === '90d' ? '90 Days' : 'All Time'}
+          </button>
+        ))}
+      </div>
+
+      {/* Gamified Badge - Member Count & Savings */}
+      <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl">
+        <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="text-4xl">🎉</div>
+            <div>
+              <div className="text-lg font-black">
+                {communityBadge.members} members from your community joined
+              </div>
+              <div className="text-indigo-200 text-sm">
+                💰 ₹{communityBadge.savings.toLocaleString()} potential savings unlocked
+              </div>
+            </div>
+          </div>
+          <button className="bg-white text-indigo-600 px-4 py-2 rounded-xl text-sm font-bold hover:bg-opacity-90 active:scale-95">
+            + Invite Neighbor
+          </button>
+        </div>
+      </div>
+
+      {/* User Spend Card */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="text-sm text-slate-500">Your cumulative spend ({timeRange === '7d' ? '7 Days' : timeRange === '30d' ? '30 Days' : timeRange === '90d' ? '90 Days' : 'All Time'})</div>
+        <div className="text-3xl font-bold text-slate-900">₹{userSpend.toLocaleString()}</div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
